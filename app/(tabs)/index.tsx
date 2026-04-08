@@ -1,98 +1,117 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import React, { useEffect, useState } from 'react';
+// IMPORTANTE: Hemos añadido 'Platform' aquí
+import { Audio } from 'expo-av';
+import { Accelerometer } from 'expo-sensors';
+import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+const SOUNDS = [
+  { id: 0, name: 'Látigo', file: require('../../assets/whip.mp3') },
+  { id: 1, name: 'Campana', file: require('../../assets/bell.mp3') },
+  { id: 2, name: 'Láser', file: require('../../assets/laser.mp3') },
+];
 
-export default function HomeScreen() {
+export default function App() {
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const [isShaking, setIsShaking] = useState(false);
+
+  async function playSound() {
+    const soundObject = new Audio.Sound();
+    try {
+      await soundObject.loadAsync(SOUNDS[currentIndex].file);
+      setSound(soundObject);
+      await soundObject.playAsync();
+    } catch (error) {
+      console.log("Error al reproducir:", error);
+    }
+  }
+
+  useEffect(() => {
+    // CONDICIÓN SALVAVIDAS: Si estamos en la web, cancelamos los sensores y no hacemos nada
+    if (Platform.OS === 'web') {
+      console.log("El acelerómetro no funciona en el PC. ¡Prueba la app en tu teléfono con Expo Go!");
+      return; 
+    }
+
+    let subscription: any = null;
+
+    Accelerometer.setUpdateInterval(100);
+    subscription = Accelerometer.addListener(accelerometerData => {
+      const { x, y, z } = accelerometerData;
+      const acceleration = Math.sqrt(x * x + y * y + z * z);
+      
+      if (acceleration > 3.0 && !isShaking) {
+        setIsShaking(true);
+        playSound();
+        setTimeout(() => setIsShaking(false), 800); 
+      }
+    });
+
+    return () => {
+      if (subscription) {
+        subscription.remove();
+      }
+    };
+  }, [currentIndex, isShaking]);
+
+  useEffect(() => {
+    return sound ? () => { sound.unloadAsync(); } : undefined;
+  }, [sound]);
+
+  const nextSound = () => setCurrentIndex((prev) => (prev + 1) % SOUNDS.length);
+  const prevSound = () => setCurrentIndex((prev) => (prev === 0 ? SOUNDS.length - 1 : prev - 1));
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+    <View style={styles.container}>
+      <Text style={styles.title}>¡Agita tu móvil!</Text>
+      
+      <View style={styles.selector}>
+        <TouchableOpacity onPress={prevSound} style={styles.button}>
+          <Text style={styles.arrow}>{"<"}</Text>
+        </TouchableOpacity>
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+        <Text style={styles.soundName}>{SOUNDS[currentIndex].name}</Text>
+
+        <TouchableOpacity onPress={nextSound} style={styles.button}>
+          <Text style={styles.arrow}>{">"}</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
+  container: {
+    flex: 1,
+    backgroundColor: '#1e1e1e',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  title: {
+    fontSize: 24,
+    color: '#fff',
+    marginBottom: 50,
+  },
+  selector: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    backgroundColor: '#333',
+    padding: 20,
+    borderRadius: 15,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  button: {
+    padding: 20,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  arrow: {
+    fontSize: 30,
+    color: '#00ffcc',
+    fontWeight: 'bold',
   },
+  soundName: {
+    fontSize: 28,
+    color: '#fff',
+    marginHorizontal: 30,
+    minWidth: 120,
+    textAlign: 'center',
+  }
 });
