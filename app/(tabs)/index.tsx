@@ -1,21 +1,75 @@
-import React, { useEffect, useState } from 'react';
-// NUEVO: Importamos Alert para las ventanas de confirmación
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio } from 'expo-av';
 import * as DocumentPicker from 'expo-document-picker';
+import * as ExpoFS from 'expo-file-system';
 import { Accelerometer } from 'expo-sensors';
+import React, { useEffect, useState } from 'react';
 import { Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-const INITIAL_SOUNDS = [
-  { id: 0, name: 'Látigo', file: require('../../assets/whip.mp3') },
-  { id: 1, name: 'Campana', file: require('../../assets/bell.mp3') },
-  { id: 2, name: 'Láser', file: require('../../assets/laser.mp3') },
-];
+const FileSystem: any = ExpoFS;
+
+// 1. Añadimos la propiedad "count" (opcional para que no rompa los audios que ya guardaste antes)
+type SoundItem = {
+  id: string;
+  name: string;
+  isDefault?: boolean; 
+  uri?: string;
+  count?: number; 
+};
+
+// 2. Le ponemos 0 por defecto al látigo
+const DEFAULT_WHIP: SoundItem = { 
+  id: 'default_whip', 
+  name: 'Látigo', 
+  isDefault: true,
+  count: 0
+};
 
 export default function App() {
-  const [soundsList, setSoundsList] = useState(INITIAL_SOUNDS);
+  const [soundsList, setSoundsList] = useState<SoundItem[]>([DEFAULT_WHIP]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [sound, setSound] = useState<Audio.Sound | null>(null);
   const [isShaking, setIsShaking] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
+  
+  // NUEVO: Estado para saber si estamos viendo el contador General o el Específico
+  const [showGlobalCount, setShowGlobalCount] = useState(true);
+
+  useEffect(() => {
+    const loadSavedSounds = async () => {
+      try {
+        const savedData = await AsyncStorage.getItem('@mis_sonidos');
+        if (savedData !== null) {
+          setSoundsList(JSON.parse(savedData));
+        }
+      } catch (error) {
+        console.log("Error cargando memoria:", error);
+      } finally {
+        setIsLoaded(true);
+      }
+    };
+    loadSavedSounds();
+  }, []);
+
+  useEffect(() => {
+    if (isLoaded) {
+      AsyncStorage.setItem('@mis_sonidos', JSON.stringify(soundsList));
+    }
+  }, [soundsList, isLoaded]);
+
+  // NUEVO: Función que suma 1 al contador del sonido actual
+  const incrementCount = () => {
+    setSoundsList(prevList => {
+      const newList = [...prevList];
+      const currentItem = newList[currentIndex];
+      // Si el sonido es antiguo y no tenía contador, asume que es 0 y le suma 1
+      newList[currentIndex] = {
+        ...currentItem,
+        count: (currentItem.count || 0) + 1
+      };
+      return newList;
+    });
+  };
 
   const pickNewSound = async () => {
     try {
@@ -28,11 +82,19 @@ export default function App() {
         const fileAsset = result.assets[0];
         const cleanName = fileAsset.name.replace(/\.[^/.]+$/, "");
 
-        const newSound = {
-          // Usamos Date.now() para que el ID sea siempre único, incluso si borramos otros
-          id: Date.now(), 
+        const baseFolder = FileSystem.documentDirectory || '';
+        const permanentUri = baseFolder + fileAsset.name;
+        
+        await FileSystem.copyAsync({
+          from: fileAsset.uri,
+          to: permanentUri
+        });
+
+        const newSound: SoundItem = {
+          id: Date.now().toString(), 
           name: cleanName,
-          file: { uri: fileAsset.uri } 
+          uri: permanentUri,
+          count: 0 // El nuevo sonido empieza con 0 agitaciones
         };
 
         setSoundsList([...soundsList, newSound]);
@@ -43,53 +105,70 @@ export default function App() {
     }
   };
 
-  // NUEVO: Función para confirmar el borrado
   const confirmDelete = () => {
-    // Si solo queda un sonido, no dejamos borrarlo para que la app no explote
     if (soundsList.length <= 1) {
-      Alert.alert(
-        "¡Espera!", 
-        "No puedes quedarte sin sonidos. Añade uno nuevo antes de borrar este."
-      );
+      Alert.alert("¡Espera!", "No puedes quedarte sin sonidos.");
       return;
     }
 
-    // Ventana de confirmación nativa
     Alert.alert(
       "Borrar sonido",
       `¿Seguro que quieres borrar "${soundsList[currentIndex].name}"?`,
       [
-        { 
-          text: "Cancelar", 
-          style: "cancel" // En iOS esto pone el botón en gris
-        },
+        { text: "Cancelar", style: "cancel" },
         { 
           text: "Sí, borrar", 
-          style: "destructive", // En iOS esto pone el botón en rojo
+          style: "destructive", 
           onPress: () => deleteCurrentSound() 
         }
       ]
     );
   };
 
-  // NUEVO: Función que ejecuta el borrado si le damos a "Sí"
-  const deleteCurrentSound = () => {
-    // Filtramos la lista para quedarnos con todos menos el que estamos viendo
+  const deleteCurrentSound = async () => {
+    const soundToDelete = soundsList[currentIndex];
+    
+    if (!soundToDelete.isDefault && soundToDelete.uri) {
+      try {
+        await FileSystem.deleteAsync(soundToDelete.uri, { idempotent: true });
+      } catch (error) {
+        console.log("Error borrando el archivo físico:", error);
+      }
+    }
+
     const newList = soundsList.filter((_, index) => index !== currentIndex);
     setSoundsList(newList);
-    
-    // Si hemos borrado el último de la lista, movemos el índice uno atrás para no salirnos del límite
     if (currentIndex >= newList.length) {
       setCurrentIndex(newList.length - 1);
     }
   };
 
   async function playSound() {
+    if (sound) {
+      await sound.unloadAsync();
+    }
+
     const soundObject = new Audio.Sound();
     try {
-      await soundObject.loadAsync(soundsList[currentIndex].file);
+      const currentSoundData = soundsList[currentIndex];
+      
+      const source = currentSoundData.isDefault 
+        ? require('../../assets/whip.mp3') 
+        : { uri: currentSoundData.uri! };
+
+      await soundObject.loadAsync(source);
       setSound(soundObject);
       await soundObject.playAsync();
+
+      setTimeout(async () => {
+        try {
+          const status = await soundObject.getStatusAsync();
+          if (status.isLoaded && status.isPlaying) {
+            await soundObject.stopAsync();
+          }
+        } catch (e) {}
+      }, 5000); 
+
     } catch (error) {
       console.log("Error al reproducir:", error);
     }
@@ -107,6 +186,7 @@ export default function App() {
       if (acceleration > 2.0 && !isShaking) {
         setIsShaking(true);
         playSound();
+        incrementCount(); // AÑADIDO: Sumamos 1 justo cuando suena
         setTimeout(() => setIsShaking(false), 800); 
       }
     });
@@ -114,7 +194,7 @@ export default function App() {
     return () => {
       if (subscription) subscription.remove();
     };
-  }, [currentIndex, isShaking, soundsList]);
+  }, [currentIndex, isShaking, soundsList, sound, isLoaded]);
 
   useEffect(() => {
     return sound ? () => { sound.unloadAsync(); } : undefined;
@@ -123,9 +203,29 @@ export default function App() {
   const nextSound = () => setCurrentIndex((prev) => (prev + 1) % soundsList.length);
   const prevSound = () => setCurrentIndex((prev) => (prev === 0 ? soundsList.length - 1 : prev - 1));
 
+  if (!isLoaded) return <View style={styles.container} />;
+
+  // CÁLCULOS MATEMÁTICOS PARA LOS CONTADORES
+  // Sumamos los contadores de todos los sonidos para el Global
+  const globalCount = soundsList.reduce((sum, item) => sum + (item.count || 0), 0);
+  // Cogemos el contador específico del sonido que estamos viendo
+  const currentCount = soundsList[currentIndex]?.count || 0;
+
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>¡Agita tu móvil!</Text>
+      
+      {/* NUEVO: Contador interactivo */}
+      <TouchableOpacity 
+        style={styles.counterContainer} 
+        onPress={() => setShowGlobalCount(!showGlobalCount)}
+      >
+        <Text style={styles.counterLabel}>
+          {showGlobalCount ? "Agitaciones Totales" : `Agitaciones: ${soundsList[currentIndex]?.name}`}
+        </Text>
+        <Text style={styles.counterNumber}>
+          {showGlobalCount ? globalCount : currentCount}
+        </Text>
+      </TouchableOpacity>
       
       <View style={styles.selector}>
         <TouchableOpacity onPress={prevSound} style={styles.button}>
@@ -141,7 +241,6 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      {/* NUEVO: Contenedor para poner los dos botones en fila */}
       <View style={styles.actionButtonsContainer}>
         <TouchableOpacity onPress={pickNewSound} style={styles.addButton}>
           <Text style={styles.addButtonText}>+ Añadir</Text>
@@ -162,10 +261,33 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  title: {
-    fontSize: 24,
-    color: '#fff',
-    marginBottom: 50,
+  // Estilos nuevos para el contador
+  counterContainer: {
+    marginBottom: 60,
+    backgroundColor: '#2a2a2a',
+    paddingVertical: 15,
+    paddingHorizontal: 30,
+    borderRadius: 20,
+    alignItems: 'center',
+    minWidth: 250,
+    // Pequeña sombra para darle relieve
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+  },
+  counterLabel: {
+    color: '#aaa',
+    fontSize: 16,
+    marginBottom: 5,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  counterNumber: {
+    color: '#00ffcc',
+    fontSize: 48,
+    fontWeight: 'bold',
   },
   selector: {
     flexDirection: 'row',
@@ -190,7 +312,6 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: 'center',
   },
-  // NUEVO: Estilos para la fila de botones inferiores
   actionButtonsContainer: {
     flexDirection: 'row',
     marginTop: 40,
@@ -202,7 +323,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 25,
     borderRadius: 25,
-    marginRight: 15, // Da un pequeño espacio a la derecha
+    marginRight: 15,
   },
   addButtonText: {
     color: '#1e1e1e',
@@ -210,7 +331,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   deleteButton: {
-    backgroundColor: '#ff4d4d', // Un rojo agradable a la vista
+    backgroundColor: '#ff4d4d',
     paddingVertical: 12,
     paddingHorizontal: 25,
     borderRadius: 25,
